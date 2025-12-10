@@ -30,6 +30,8 @@ This workflow solves the problem of batch-loading motions in iClone and maintain
 
 ## Part 1: iClone Motion Batch Loader
 
+![iClone Motion Library Browser](images/iclone-motion-browser.png)
+
 ### Installation
 
 1. Copy `MotionBatchLoader.py` to your iClone scripts folder:
