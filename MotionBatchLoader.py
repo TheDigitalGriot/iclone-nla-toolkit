@@ -93,20 +93,35 @@ class MotionBatchLoader:
         if not self.motion_files:
             return [], "No motions in queue"
         
-        fps = RLPy.RGlobal.GetFps()
-        gap_ms = int((gap_frames / fps) * 1000) if gap_frames > 0 else 0
+        # Get FPS - RGlobal.GetFps() returns RFps object
+        fps_obj = RLPy.RGlobal.GetFps()
+        try:
+            fps = fps_obj.ToFloat()
+        except:
+            try:
+                fps = float(fps_obj)
+            except:
+                fps = 60.0  # Default fallback
+        
+        # Calculate ticks per frame (iClone uses ~137 ticks/frame at 60fps)
+        # More precisely: 8220 ticks/second, so ticks_per_frame = 8220/fps
+        ticks_per_second = 8220  # iClone's internal tick rate
+        ticks_per_frame = ticks_per_second / fps
+        
+        print(f"FPS: {fps}, Ticks/frame: {ticks_per_frame:.2f}")
         
         self.loaded_clips_info = []
-        current_time_ms = 0
+        cumulative_ticks = 0  # Track position in tick units
         
         RLPy.RGlobal.BeginAction("Batch Load Motions")
         
         for i, motion_path in enumerate(self.motion_files):
             motion_name = os.path.splitext(os.path.basename(motion_path))[0]
             
-            # Load motion at current time
-            load_time = RLPy.RTime()
-            load_time.SetValue(current_time_ms)
+            # Create load time from tick value
+            load_time = RLPy.RTime.FromValue(cumulative_ticks)
+            
+            print(f"Loading '{motion_name}' at tick {cumulative_ticks}...")
             
             result = RLPy.RFileIO.LoadMotion(motion_path, load_time, avatar)
             
@@ -117,32 +132,38 @@ class MotionBatchLoader:
                 if clip_count > 0:
                     clip = skel.GetClip(clip_count - 1)
                     if clip:
-                        clip_length_ms = clip.GetLength().GetValue()
-                        clip_length_frames = int((clip_length_ms / 1000.0) * fps)
+                        # Get clip length in ticks
+                        clip_length_ticks = clip.GetLength().ToInt()
                         
-                        start_frame = int((current_time_ms / 1000.0) * fps)
+                        # Convert ticks to frames
+                        clip_length_frames = int(clip_length_ticks / ticks_per_frame)
+                        start_frame = int(cumulative_ticks / ticks_per_frame)
                         end_frame = start_frame + clip_length_frames
                         
                         clip_info = {
                             "index": i,
                             "name": motion_name,
                             "source_file": motion_path,
-                            "start_time_ms": current_time_ms,
-                            "length_ms": clip_length_ms,
+                            "start_ticks": cumulative_ticks,
+                            "length_ticks": clip_length_ticks,
                             "start_frame": start_frame,
                             "end_frame": end_frame,
                             "length_frames": clip_length_frames,
                         }
                         self.loaded_clips_info.append(clip_info)
-                        current_time_ms += int(clip_length_ms) + gap_ms
                         
-                        print(f"Loaded: {motion_name} | Frames: {start_frame}-{end_frame}")
+                        # Add gap in ticks
+                        gap_ticks = int(gap_frames * ticks_per_frame)
+                        cumulative_ticks += clip_length_ticks + gap_ticks
+                        
+                        print(f"  OK: {motion_name} | Frames: {start_frame}-{end_frame} | Length: {clip_length_ticks} ticks")
             else:
-                print(f"Failed to load: {motion_path}")
+                print(f"  FAILED: {motion_path}")
         
         RLPy.RGlobal.EndAction()
         RLPy.RGlobal.ObjectModified(avatar, RLPy.EObjectType_Avatar)
         
+        print(f"Loaded {len(self.loaded_clips_info)} clips to timeline")
         return self.loaded_clips_info, None
     
     def export_with_metadata(self, output_path):
@@ -185,7 +206,13 @@ class MotionBatchLoader:
         
         # Save JSON sidecar
         json_path = os.path.splitext(output_path)[0] + "_clips.json"
-        fps = RLPy.RGlobal.GetFps()
+        
+        # Get FPS value from RFps object
+        fps_obj = RLPy.RGlobal.GetFps()
+        try:
+            fps = fps_obj.ToFloat()
+        except:
+            fps = 60.0
         
         metadata = {
             "version": "1.0",
@@ -469,7 +496,14 @@ class MotionBatchUI(QtWidgets.QWidget):
             RLPy.RUi.ShowMessageBox("Motion Batch Loader", error, RLPy.EMsgButton_Ok)
         elif clips_info:
             total_frames = clips_info[-1]["end_frame"]
-            fps = RLPy.RGlobal.GetFps()
+            
+            # Get FPS value from RFps object
+            fps_obj = RLPy.RGlobal.GetFps()
+            try:
+                fps = fps_obj.ToFloat()
+            except:
+                fps = 60.0
+            
             duration = total_frames / fps if fps > 0 else 0
             
             self.status_label.setText(f"Loaded {len(clips_info)} clips")
@@ -534,18 +568,25 @@ def show_window():
     _motion_batch_dock = RLPy.RUi.CreateRDockWidget()
     _motion_batch_dock.SetWindowTitle("Motion Batch Loader")
     
-    # Allow docking on left and right sides
-    _motion_batch_dock.SetAllowedAreas(RLPy.EDockWidgetAreas_LeftDockWidgetArea | 
-                                        RLPy.EDockWidgetAreas_RightDockWidgetArea)
-    
     # Wrap for PySide2
     dock = wrapInstance(int(_motion_batch_dock.GetWindow()), QtWidgets.QDockWidget)
-    dock.setMinimumWidth(320)
-    dock.setMinimumHeight(480)
+    
+    # Enable all dock features
+    dock.setFeatures(
+        QtWidgets.QDockWidget.DockWidgetMovable |
+        QtWidgets.QDockWidget.DockWidgetFloatable |
+        QtWidgets.QDockWidget.DockWidgetClosable
+    )
     
     # Create main widget container
+    main_widget = QtWidgets.QWidget()
+    main_layout = QtWidgets.QVBoxLayout(main_widget)
+    main_layout.setContentsMargins(4, 4, 4, 4)
+    
     _motion_batch_widget = MotionBatchUI()
-    dock.setWidget(_motion_batch_widget)
+    main_layout.addWidget(_motion_batch_widget)
+    
+    dock.setWidget(main_widget)
     
     # Register callback
     _dock_callback = DockEventCallback()
