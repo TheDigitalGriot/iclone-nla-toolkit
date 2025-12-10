@@ -7,9 +7,9 @@ with clip metadata for splitting in Blender.
 Usage:
 1. Load this script in iClone via Script > Load Python
 2. Select your character in the scene
-3. Click "Add Motions" to select motion files (.rlmotion, .imotion, .fbx)
+3. Drag motions from Content Manager OR click "Add Motions..."
 4. Click "Load to Timeline" to add them sequentially
-5. Click "Export with Metadata" to export FBX + JSON sidecar
+5. Click "Export FBX + JSON..." to export with metadata
 
 Author: Created for Gavin Bennett's GB Portfolio 2025 project
 """
@@ -21,14 +21,15 @@ from PySide2 import QtWidgets, QtCore
 from shiboken2 import wrapInstance
 
 # Global references to prevent garbage collection
-motion_batch_dialog = None
-motion_batch_callback = None
+_motion_batch_dialog = None
+_motion_batch_widget = None
+_dialog_callback = None
 
 
 class MotionBatchLoader:
     """Main controller for motion batch loading operations."""
     
-    SUPPORTED_EXTENSIONS = ('.rlmotion', '.imotion', '.fbx', '.bvh')
+    SUPPORTED_EXTENSIONS = ('.rlmotion', '.imotion', '.fbx', '.bvh', '.imotionplus')
     
     def __init__(self):
         self.motion_files = []
@@ -39,13 +40,11 @@ class MotionBatchLoader:
         """Get the currently selected avatar, or first avatar in scene."""
         selected = RLPy.RScene.GetSelectedObjects()
         
-        # Check if selection is an avatar
         for obj in selected:
             if obj.GetType() == RLPy.EObjectType_Avatar:
                 self.avatar = obj
                 return obj
         
-        # Fallback to first avatar in scene
         avatars = RLPy.RScene.GetAvatars()
         if avatars:
             self.avatar = avatars[0]
@@ -55,10 +54,13 @@ class MotionBatchLoader:
     
     def add_motion_files(self, file_paths):
         """Add motion files to the queue."""
+        added = 0
         for path in file_paths:
             if path.lower().endswith(self.SUPPORTED_EXTENSIONS):
                 if path not in self.motion_files:
                     self.motion_files.append(path)
+                    added += 1
+        return added
     
     def remove_motion_file(self, index):
         """Remove a motion file from the queue by index."""
@@ -83,23 +85,13 @@ class MotionBatchLoader:
                 self.motion_files[index + 1], self.motion_files[index]
     
     def load_motions_to_timeline(self, gap_frames=0):
-        """
-        Load all queued motions to the timeline sequentially.
-        
-        Args:
-            gap_frames: Number of frames to add between clips (default: 0)
-        
-        Returns:
-            List of clip info dictionaries
-        """
+        """Load all queued motions to the timeline sequentially."""
         avatar = self.get_selected_avatar()
         if not avatar:
-            RLPy.RUi.ShowMessageBox(
-                "Motion Batch Loader",
-                "No avatar found in scene. Please add a character first.",
-                RLPy.EMsgButton_Ok
-            )
-            return []
+            return [], "No avatar found in scene"
+        
+        if not self.motion_files:
+            return [], "No motions in queue"
         
         fps = RLPy.RGlobal.GetFps()
         gap_ms = int((gap_frames / fps) * 1000) if gap_frames > 0 else 0
@@ -107,30 +99,24 @@ class MotionBatchLoader:
         self.loaded_clips_info = []
         current_time_ms = 0
         
-        # Get initial clip count
-        skel = avatar.GetSkeletonComponent()
-        initial_clip_count = skel.GetClipCount() if skel else 0
-        
         RLPy.RGlobal.BeginAction("Batch Load Motions")
         
         for i, motion_path in enumerate(self.motion_files):
             motion_name = os.path.splitext(os.path.basename(motion_path))[0]
             
-            # Pre-load motion to get length
+            # Pre-load motion
             motion_length = RLPy.RTime(0)
-            preload_result = RLPy.RFileIO.PreLoadMotion(motion_path, avatar, motion_length)
+            RLPy.RFileIO.PreLoadMotion(motion_path, avatar, motion_length)
             
             # Load motion at current time
             load_time = RLPy.RTime(current_time_ms)
             result = RLPy.RFileIO.LoadMotion(motion_path, load_time, avatar)
             
             if result == RLPy.RStatus.Success:
-                # Get the clip we just loaded
                 skel = avatar.GetSkeletonComponent()
                 clip_count = skel.GetClipCount()
                 
                 if clip_count > 0:
-                    # Get the last clip (the one we just added)
                     clip = skel.GetClip(clip_count - 1)
                     if clip:
                         clip_length_ms = clip.GetLength().GetValue()
@@ -150,8 +136,6 @@ class MotionBatchLoader:
                             "length_frames": clip_length_frames,
                         }
                         self.loaded_clips_info.append(clip_info)
-                        
-                        # Advance time for next clip
                         current_time_ms += int(clip_length_ms) + gap_ms
                         
                         print(f"Loaded: {motion_name} | Frames: {start_frame}-{end_frame}")
@@ -159,41 +143,19 @@ class MotionBatchLoader:
                 print(f"Failed to load: {motion_path}")
         
         RLPy.RGlobal.EndAction()
-        
-        # Force timeline update
         RLPy.RGlobal.ObjectModified(avatar, RLPy.EObjectType_Avatar)
         
-        return self.loaded_clips_info
+        return self.loaded_clips_info, None
     
-    def export_with_metadata(self, output_path, export_settings=None):
-        """
-        Export FBX with a JSON sidecar containing clip metadata.
-        
-        Args:
-            output_path: Path for the FBX file
-            export_settings: Optional dict of export settings
-        
-        Returns:
-            Tuple of (fbx_path, json_path) or (None, None) on failure
-        """
+    def export_with_metadata(self, output_path):
+        """Export FBX with a JSON sidecar containing clip metadata."""
         avatar = self.get_selected_avatar()
         if not avatar:
-            RLPy.RUi.ShowMessageBox(
-                "Motion Batch Loader",
-                "No avatar found.",
-                RLPy.EMsgButton_Ok
-            )
-            return None, None
+            return None, None, "No avatar found"
         
         if not self.loaded_clips_info:
-            RLPy.RUi.ShowMessageBox(
-                "Motion Batch Loader",
-                "No clips loaded. Load motions first.",
-                RLPy.EMsgButton_Ok
-            )
-            return None, None
+            return None, None, "No clips loaded"
         
-        # Ensure .fbx extension
         if not output_path.lower().endswith('.fbx'):
             output_path += '.fbx'
         
@@ -202,17 +164,14 @@ class MotionBatchLoader:
         export_option2 = RLPy.EExportFbxOptions2__None
         export_option3 = RLPy.EExportFbxOptions3__None
         
-        # Standard export options
         export_option |= RLPy.EExportFbxOptions_AutoSkinRigidMesh
         export_option |= RLPy.EExportFbxOptions_RemoveAllUnused
         export_option |= RLPy.EExportFbxOptions_ExportPbrTextureAsImageInFormatDirectory
         
-        # Blender-compatible options
         export_option2 |= RLPy.EExportFbxOptions2_RenameDuplicateBoneName
         export_option2 |= RLPy.EExportFbxOptions2_RenameDuplicateMaterialName
         
         try:
-            # Export FBX
             result = RLPy.RFileIO.ExportFbxFile(
                 avatar,
                 output_path,
@@ -221,18 +180,13 @@ class MotionBatchLoader:
                 export_option3,
                 RLPy.EExportTextureSize_Original,
                 RLPy.EExportTextureFormat_Default,
-                ""  # No separate motion file
+                ""
             )
-            
-            if result != RLPy.RStatus.Success:
-                print(f"FBX export failed with status: {result}")
-                # Continue anyway to save the metadata
         except Exception as e:
             print(f"FBX export error: {e}")
         
-        # Save JSON sidecar with clip metadata
+        # Save JSON sidecar
         json_path = os.path.splitext(output_path)[0] + "_clips.json"
-        
         fps = RLPy.RGlobal.GetFps()
         
         metadata = {
@@ -248,23 +202,10 @@ class MotionBatchLoader:
         try:
             with open(json_path, 'w', encoding='utf-8') as f:
                 json.dump(metadata, f, indent=2)
-            print(f"Clip metadata saved to: {json_path}")
         except Exception as e:
-            print(f"Failed to save metadata: {e}")
-            return output_path, None
+            return output_path, None, f"JSON save failed: {e}"
         
-        return output_path, json_path
-    
-    def get_clips_summary(self):
-        """Get a summary string of loaded clips."""
-        if not self.loaded_clips_info:
-            return "No clips loaded"
-        
-        total_frames = self.loaded_clips_info[-1]["end_frame"] if self.loaded_clips_info else 0
-        fps = RLPy.RGlobal.GetFps()
-        total_seconds = total_frames / fps if fps > 0 else 0
-        
-        return f"{len(self.loaded_clips_info)} clips | {total_frames} frames | {total_seconds:.1f}s"
+        return output_path, json_path, None
 
 
 class MotionBatchUI(QtWidgets.QWidget):
@@ -273,6 +214,7 @@ class MotionBatchUI(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.loader = MotionBatchLoader()
+        self.setAcceptDrops(True)
         self.setup_ui()
     
     def setup_ui(self):
@@ -299,13 +241,13 @@ class MotionBatchUI(QtWidgets.QWidget):
         layout.addWidget(line)
         
         # Motion list
-        list_label = QtWidgets.QLabel("Motion Queue:")
+        list_label = QtWidgets.QLabel("Motion Queue (drag from Content Manager or use Add):")
         layout.addWidget(list_label)
         
         self.motion_list = QtWidgets.QListWidget()
         self.motion_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
-        self.motion_list.setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
         self.motion_list.setMinimumHeight(150)
+        self.motion_list.setAcceptDrops(False)  # Parent handles drops
         layout.addWidget(self.motion_list)
         
         # List controls
@@ -391,13 +333,70 @@ class MotionBatchUI(QtWidgets.QWidget):
         # Initial refresh
         self.refresh_avatar()
     
+    # Drag and drop handlers
+    def dragEnterEvent(self, event):
+        if event.mimeData():
+            event.acceptProposedAction()
+    
+    def dragMoveEvent(self, event):
+        event.acceptProposedAction()
+    
+    def dropEvent(self, event):
+        mime_data = event.mimeData()
+        dropped_files = []
+        
+        # Debug output
+        print("=== Drop Event ===")
+        for fmt in mime_data.formats():
+            print(f"Format: {fmt}")
+        
+        # Try URLs first
+        if mime_data.hasUrls():
+            for url in mime_data.urls():
+                path = url.toLocalFile()
+                if path:
+                    dropped_files.append(path)
+                    print(f"URL: {path}")
+        
+        # Try text
+        if not dropped_files and mime_data.hasText():
+            text = mime_data.text().strip()
+            for line in text.split('\n'):
+                line = line.strip()
+                if line and os.path.exists(line):
+                    dropped_files.append(line)
+                    print(f"Text: {line}")
+        
+        # Try all formats for file paths
+        if not dropped_files:
+            for fmt in mime_data.formats():
+                try:
+                    data = bytes(mime_data.data(fmt))
+                    text = data.decode('utf-8', errors='ignore')
+                    # Look for paths
+                    for part in text.replace('\x00', ' ').split():
+                        if os.path.exists(part):
+                            dropped_files.append(part)
+                            print(f"Found in {fmt}: {part}")
+                except:
+                    pass
+        
+        if dropped_files:
+            added = self.loader.add_motion_files(dropped_files)
+            self.update_motion_list()
+            self.status_label.setText(f"Added {added} motion(s)")
+            event.acceptProposedAction()
+        else:
+            print("No valid files found in drop")
+            event.ignore()
+    
     def refresh_avatar(self):
         """Refresh the avatar display."""
         avatar = self.loader.get_selected_avatar()
         if avatar:
             self.avatar_label.setText(f"Avatar: {avatar.GetName()}")
         else:
-            self.avatar_label.setText("Avatar: None (add a character to scene)")
+            self.avatar_label.setText("Avatar: None (add a character)")
     
     def add_motions(self):
         """Open file dialog to add motion files."""
@@ -405,12 +404,13 @@ class MotionBatchUI(QtWidgets.QWidget):
             self,
             "Select Motion Files",
             "",
-            "Motion Files (*.rlmotion *.imotion *.fbx *.bvh);;All Files (*.*)"
+            "Motion Files (*.rlmotion *.imotion *.imotionplus *.fbx *.bvh);;All Files (*.*)"
         )
         
         if files:
-            self.loader.add_motion_files(files)
+            added = self.loader.add_motion_files(files)
             self.update_motion_list()
+            self.status_label.setText(f"Added {added} motion(s)")
     
     def remove_selected(self):
         """Remove selected items from the motion list."""
@@ -452,26 +452,23 @@ class MotionBatchUI(QtWidgets.QWidget):
     
     def load_to_timeline(self):
         """Load all motions to the timeline."""
-        if not self.loader.motion_files:
-            RLPy.RUi.ShowMessageBox(
-                "Motion Batch Loader",
-                "No motion files added. Click 'Add Motions...' first.",
-                RLPy.EMsgButton_Ok
-            )
-            return
-        
         gap_frames = self.gap_spinbox.value()
         
         self.status_label.setText("Loading motions...")
         QtWidgets.QApplication.processEvents()
         
-        clips_info = self.loader.load_motions_to_timeline(gap_frames)
+        clips_info, error = self.loader.load_motions_to_timeline(gap_frames)
         
-        if clips_info:
+        if error:
+            self.status_label.setText(error)
+            RLPy.RUi.ShowMessageBox("Motion Batch Loader", error, RLPy.EMsgButton_Ok)
+        elif clips_info:
+            total_frames = clips_info[-1]["end_frame"]
+            fps = RLPy.RGlobal.GetFps()
+            duration = total_frames / fps if fps > 0 else 0
+            
             self.status_label.setText(f"Loaded {len(clips_info)} clips")
-            self.clips_info_label.setText(self.loader.get_clips_summary())
-        else:
-            self.status_label.setText("Failed to load clips")
+            self.clips_info_label.setText(f"{len(clips_info)} clips | {total_frames} frames | {duration:.1f}s")
     
     def export_with_metadata(self):
         """Export FBX with clip metadata JSON."""
@@ -494,18 +491,17 @@ class MotionBatchUI(QtWidgets.QWidget):
             self.status_label.setText("Exporting...")
             QtWidgets.QApplication.processEvents()
             
-            fbx_path, json_path = self.loader.export_with_metadata(file_path)
+            fbx_path, json_path, error = self.loader.export_with_metadata(file_path)
             
-            if json_path:
+            if error:
+                self.status_label.setText(f"Error: {error}")
+            elif json_path:
                 self.status_label.setText("Export complete!")
                 RLPy.RUi.ShowMessageBox(
                     "Motion Batch Loader",
-                    f"Exported successfully!\n\nFBX: {fbx_path}\nJSON: {json_path}\n\n"
-                    "Use the Blender addon to import and split into NLA tracks.",
+                    f"Exported!\n\nFBX: {fbx_path}\nJSON: {json_path}",
                     RLPy.EMsgButton_Ok
                 )
-            else:
-                self.status_label.setText("Export partially failed")
 
 
 class DialogEventCallback(RLPy.RDialogCallback):
@@ -518,31 +514,43 @@ class DialogEventCallback(RLPy.RDialogCallback):
         return True
 
 
-def run_script():
-    """Entry point for the script."""
-    global motion_batch_dialog, motion_batch_callback
+def show_window():
+    """Show the Motion Batch Loader window."""
+    global _motion_batch_dialog, _motion_batch_widget, _dialog_callback
+    
+    # Close existing window if open
+    if _motion_batch_dialog is not None:
+        try:
+            _motion_batch_dialog.Hide()
+        except:
+            pass
     
     # Create the dialog window
-    motion_batch_dialog = RLPy.RUi.CreateRDialog()
-    motion_batch_dialog.SetWindowTitle("Motion Batch Loader")
+    _motion_batch_dialog = RLPy.RUi.CreateRDialog()
+    _motion_batch_dialog.SetWindowTitle("Motion Batch Loader")
     
     # Wrap the dialog for PySide2
-    dialog = wrapInstance(int(motion_batch_dialog.GetWindow()), QtWidgets.QDialog)
+    dialog = wrapInstance(int(_motion_batch_dialog.GetWindow()), QtWidgets.QDialog)
     dialog.setMinimumWidth(350)
-    dialog.setMinimumHeight(500)
+    dialog.setMinimumHeight(520)
     
     # Create and add our widget
-    widget = MotionBatchUI()
-    dialog.layout().addWidget(widget)
+    _motion_batch_widget = MotionBatchUI()
+    dialog.layout().addWidget(_motion_batch_widget)
     
     # Register callback
-    motion_batch_callback = DialogEventCallback()
-    motion_batch_dialog.RegisterEventCallback(motion_batch_callback)
+    _dialog_callback = DialogEventCallback()
+    _motion_batch_dialog.RegisterEventCallback(_dialog_callback)
     
     # Show the dialog
-    motion_batch_dialog.Show()
+    _motion_batch_dialog.Show()
 
 
-# Run when loaded
-if __name__ == "__main__" or True:
+# Entry point - called when script is loaded
+def run_script():
+    show_window()
+
+
+# Only run if executed directly (not on import)
+if __name__ == "__main__":
     run_script()
