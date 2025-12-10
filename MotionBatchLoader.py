@@ -18,7 +18,7 @@ import RLPy
 import os
 import json
 from PySide2 import QtWidgets, QtCore
-from PySide2.shiboken2 import wrapInstance
+from shiboken2 import wrapInstance
 
 # Global references to prevent garbage collection
 motion_batch_dialog = None

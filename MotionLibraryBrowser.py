@@ -19,7 +19,7 @@ import RLPy
 import os
 import json
 from PySide2 import QtWidgets, QtCore, QtGui
-from PySide2.shiboken2 import wrapInstance
+from shiboken2 import wrapInstance
 
 # Global references
 motion_library_dialog = None
