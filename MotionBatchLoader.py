@@ -104,12 +104,10 @@ class MotionBatchLoader:
         for i, motion_path in enumerate(self.motion_files):
             motion_name = os.path.splitext(os.path.basename(motion_path))[0]
             
-            # Pre-load motion
-            motion_length = RLPy.RTime(0)
-            RLPy.RFileIO.PreLoadMotion(motion_path, avatar, motion_length)
-            
             # Load motion at current time
-            load_time = RLPy.RTime(current_time_ms)
+            load_time = RLPy.RTime()
+            load_time.SetValue(current_time_ms)
+            
             result = RLPy.RFileIO.LoadMotion(motion_path, load_time, avatar)
             
             if result == RLPy.RStatus.Success:
@@ -355,8 +353,15 @@ class MotionBatchUI(QtWidgets.QWidget):
             for url in mime_data.urls():
                 path = url.toLocalFile()
                 if path:
-                    dropped_files.append(path)
                     print(f"URL: {path}")
+                    # Filter out invalid iClone placeholder paths
+                    if "(?)NotExistPathForDrag(?)" in path:
+                        print("  -> Skipped (content not downloaded)")
+                        continue
+                    if os.path.exists(path):
+                        dropped_files.append(path)
+                    else:
+                        print(f"  -> File not found: {path}")
         
         # Try text
         if not dropped_files and mime_data.hasText():
