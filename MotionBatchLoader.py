@@ -21,9 +21,9 @@ from PySide2 import QtWidgets, QtCore
 from shiboken2 import wrapInstance
 
 # Global references to prevent garbage collection
-_motion_batch_dialog = None
+_motion_batch_dock = None
 _motion_batch_widget = None
-_dialog_callback = None
+_dock_callback = None
 
 
 class MotionBatchLoader:
@@ -509,8 +509,8 @@ class MotionBatchUI(QtWidgets.QWidget):
                 )
 
 
-class DialogEventCallback(RLPy.RDialogCallback):
-    """Callback for dialog events."""
+class DockEventCallback(RLPy.RDialogCallback):
+    """Callback for dock widget events."""
     
     def __init__(self):
         RLPy.RDialogCallback.__init__(self)
@@ -520,35 +520,39 @@ class DialogEventCallback(RLPy.RDialogCallback):
 
 
 def show_window():
-    """Show the Motion Batch Loader window."""
-    global _motion_batch_dialog, _motion_batch_widget, _dialog_callback
+    """Show the Motion Batch Loader as a dockable widget."""
+    global _motion_batch_dock, _motion_batch_widget, _dock_callback
     
-    # Close existing window if open
-    if _motion_batch_dialog is not None:
+    # Close existing dock if open
+    if _motion_batch_dock is not None:
         try:
-            _motion_batch_dialog.Hide()
+            _motion_batch_dock.Hide()
         except:
             pass
     
-    # Create the dialog window
-    _motion_batch_dialog = RLPy.RUi.CreateRDialog()
-    _motion_batch_dialog.SetWindowTitle("Motion Batch Loader")
+    # Create dockable widget
+    _motion_batch_dock = RLPy.RUi.CreateRDockWidget()
+    _motion_batch_dock.SetWindowTitle("Motion Batch Loader")
     
-    # Wrap the dialog for PySide2
-    dialog = wrapInstance(int(_motion_batch_dialog.GetWindow()), QtWidgets.QDialog)
-    dialog.setMinimumWidth(350)
-    dialog.setMinimumHeight(520)
+    # Allow docking on left and right sides
+    _motion_batch_dock.SetAllowedAreas(RLPy.EDockWidgetAreas_LeftDockWidgetArea | 
+                                        RLPy.EDockWidgetAreas_RightDockWidgetArea)
     
-    # Create and add our widget
+    # Wrap for PySide2
+    dock = wrapInstance(int(_motion_batch_dock.GetWindow()), QtWidgets.QDockWidget)
+    dock.setMinimumWidth(320)
+    dock.setMinimumHeight(480)
+    
+    # Create main widget container
     _motion_batch_widget = MotionBatchUI()
-    dialog.layout().addWidget(_motion_batch_widget)
+    dock.setWidget(_motion_batch_widget)
     
     # Register callback
-    _dialog_callback = DialogEventCallback()
-    _motion_batch_dialog.RegisterEventCallback(_dialog_callback)
+    _dock_callback = DockEventCallback()
+    _motion_batch_dock.RegisterEventCallback(_dock_callback)
     
-    # Show the dialog
-    _motion_batch_dialog.Show()
+    # Show the dock widget
+    _motion_batch_dock.Show()
 
 
 # Entry point - called when script is loaded
